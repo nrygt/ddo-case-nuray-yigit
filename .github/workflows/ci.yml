@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: backend/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l backend frontend | tee /dev/stderr)"
+      - name: go vet
+        run: cd backend && go vet ./... && cd ../frontend && go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64
+          working-directory: backend
+      - name: frontend sözdizimi
+        run: node --check frontend/public/app.js && node --check frontend/public/sw.js
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: pist_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: backend/go.sum
+      - name: testler (race, entegrasyon dahil)
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/pist_test?sslmode=disable
+        run: go test -race -count=1 -coverprofile=coverage.out ./... 2>&1 | tee test.log
+      - name: test sayısı
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/pist_test?sslmode=disable
+        run: |
+          n=$(go test -count=1 -json ./... | jq -r 'select(.Action=="pass" and .Test!=null) | .Test' | grep -vc '/')
+          echo "Geçen test fonksiyonu: $n" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$n" -ge 40
+      - name: kapsama raporu (domain >= %70)
+        working-directory: backend
+        run: |
+          ./scripts/coverage.sh coverage.out | tee coverage.txt
+          { echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: backend/coverage.out
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: backend imajı
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          tags: pistkoordinat-backend:ci
+          load: true
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: web imajı
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          tags: pistkoordinat-web:ci
+          load: true
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      - name: imaj boyutları
+        run: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep pistkoordinat | tee -a "$GITHUB_STEP_SUMMARY"
+
+  e2e:
+    needs: [test, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - name: soğuk başlangıç (süre ölçümü)
+        run: |
+          start=$(date +%s)
+          docker compose up --build -d
+          ./scripts/wait-healthy.sh
+          echo "Hazır olma süresi: $(( $(date +%s) - start )) sn" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: make verify
+        run: make verify | tee verify.txt
+      - name: doğrulama özeti
+        if: always()
+        run: |
+          { echo '```'; sed -n '/^KİMLİK/,$p' verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: kaos senaryosu
+        run: ./scripts/chaos.sh
+      - name: loglar
+        if: failure()
+        run: docker compose logs --tail=200
