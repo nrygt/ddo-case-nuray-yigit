@@ -1,1 +1,476 @@
 openapi: 3.0.3
+info:
+  title: PistKoordinat API
+  version: 1.0.0
+  description: |
+    Havalimanı stand/kapı tahsisi, yer hizmeti görevleri, gecikme yönetimi ve
+    turnaround analitiği. Tüm korumalı uç noktalar `Authorization: Bearer <access_token>`
+    ister. Hatalar her zaman `{"error":{"code":"…","message":"…"}}` biçimindedir.
+
+    Roller: ops_controller, ground_chief, crew_lead, airline_rep, management.
+    Her işlemin `x-roles` alanı izinli rolleri listeler; diğer roller 403 alır.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearer: []
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    date:
+      name: date
+      in: query
+      description: Operasyon günü (YYYY-MM-DD). Boşsa havalimanı saatine göre bugün.
+      schema: { type: string, format: date }
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500 }
+    cursor:
+      name: cursor
+      in: query
+      description: Keyset sayfalama imleci; önceki yanıtın `next_cursor` değeri.
+      schema: { type: string }
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Aynı anahtarla tekrar gelen istek ilk yanıtı aynen alır (`Idempotent-Replayed: true`).
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+  responses:
+    Error:
+      description: Hata
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: validation_failed }
+            message: { type: string }
+            details: { type: object }
+    Tokens:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_at: { type: string, format: date-time }
+        user: { $ref: '#/components/schemas/User' }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        full_name: { type: string }
+        role: { type: string, enum: [ops_controller, ground_chief, crew_lead, airline_rep, management] }
+        airline_code: { type: string }
+        crew_id: { type: integer }
+    Flight:
+      type: object
+      properties:
+        id: { type: integer }
+        flight_no: { type: string, example: YK1234 }
+        airline_code: { type: string }
+        direction: { type: string, enum: [ARR, DEP] }
+        tail_number: { type: string, example: TC-YKA }
+        aircraft_type: { type: string, example: A320 }
+        other_airport: { type: string, example: ESB }
+        op_date: { type: string, format: date }
+        sched_time: { type: string, format: date-time }
+        est_time: { type: string, format: date-time }
+        actual_time: { type: string, format: date-time }
+        status: { type: string, enum: [SCHEDULED, DELAYED, CANCELLED, LANDED, DEPARTED] }
+        delay_min: { type: integer }
+        turnaround_id: { type: integer }
+        stand_code: { type: string }
+        gate_code: { type: string }
+    FlightPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Flight' } }
+        next_cursor: { type: string }
+    NewFlight:
+      type: object
+      required: [flight_no, direction, tail_number, other_airport, sched_time]
+      properties:
+        flight_no: { type: string }
+        direction: { type: string, enum: [ARR, DEP] }
+        tail_number: { type: string }
+        other_airport: { type: string }
+        sched_time: { type: string, format: date-time }
+    Unallocated:
+      type: object
+      properties:
+        turnaround_id: { type: integer }
+        tail_number: { type: string }
+        reason: { type: string, enum: [NO_COMPATIBLE_STAND, ALL_COMPATIBLE_STANDS_OCCUPIED, INVALID_TIMES] }
+        detail: { type: string }
+        blocked_by: { type: array, items: { type: integer } }
+    RunSummary:
+      type: object
+      properties:
+        run_id: { type: integer }
+        op_date: { type: string, format: date }
+        duration_ms: { type: integer }
+        solve_ms: { type: number }
+        total: { type: integer }
+        allocated: { type: integer }
+        changed: { type: integer }
+        unallocated: { type: array, items: { $ref: '#/components/schemas/Unallocated' } }
+    FeedEvent:
+      type: object
+      required: [source, message_id, flight_no, op_date, direction, seq, kind]
+      properties:
+        source: { type: string, example: AODB }
+        message_id: { type: string }
+        flight_no: { type: string }
+        op_date: { type: string, format: date }
+        direction: { type: string, enum: [ARR, DEP] }
+        seq: { type: integer, description: Uçuş için artan sıra; küçük/eşit seq eski (STALE) sayılır. }
+        kind: { type: string, enum: [ESTIMATE, CANCEL, ACTUAL] }
+        new_time: { type: string, format: date-time }
+    ReplanRequest:
+      type: object
+      required: [flight_id, new_time]
+      properties:
+        flight_id: { type: integer }
+        new_time: { type: string, format: date-time }
+        fingerprint: { type: string, description: Önizlemeden gelen parmak izi; durum değiştiyse 409. }
+    Plan:
+      type: object
+      properties:
+        turnarounds: { type: array, items: { type: object } }
+        flights: { type: array, items: { type: object } }
+        stands: { type: array, items: { type: object } }
+        tasks: { type: array, items: { type: object } }
+        unallocated: { type: array, items: { $ref: '#/components/schemas/Unallocated' } }
+        risks: { type: array, items: { type: object } }
+        assignment_changes: { type: integer }
+        fingerprint: { type: string }
+    SyncEvent:
+      type: object
+      required: [client_event_id, task_id, type, occurred_at]
+      properties:
+        client_event_id: { type: string, format: uuid }
+        task_id: { type: integer }
+        type: { type: string, enum: [STARTED, FINISHED] }
+        occurred_at: { type: string, format: date-time }
+    ReportRow:
+      type: object
+      properties:
+        group: { type: string }
+        count: { type: integer }
+        p50_min: { type: number }
+        p90_min: { type: number }
+        avg_min: { type: number }
+        target_min: { type: number }
+        violation_rate: { type: number }
+        rank_by_p90: { type: integer }
+
+paths:
+  /health:
+    get:
+      security: []
+      summary: Sağlık (veritabanı bağlantısı dahil)
+      responses:
+        '200': { description: Sağlıklı }
+        '503': { description: Veritabanına ulaşılamıyor }
+  /metrics:
+    get:
+      security: []
+      summary: Prometheus metrikleri
+      responses: { '200': { description: text/plain exposition } }
+  /openapi.yaml:
+    get:
+      security: []
+      summary: Bu doküman
+      responses: { '200': { description: YAML } }
+
+  /api/v1/auth/login:
+    post:
+      security: []
+      summary: Giriş
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string }, password: { type: string } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Tokens' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /api/v1/auth/refresh:
+    post:
+      security: []
+      summary: Refresh token rotasyonu (eski token tek kullanımlık)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { refresh_token: { type: string } } } } }
+      responses:
+        '200': { description: Yeni çift, content: { application/json: { schema: { $ref: '#/components/schemas/Tokens' } } } }
+        '401': { description: Geçersiz ya da tekrar kullanılmış (token_reused → tüm oturumlar kapatılır) }
+  /api/v1/auth/logout:
+    post:
+      security: []
+      summary: Refresh token iptali
+      responses: { '204': { description: OK } }
+  /api/v1/me:
+    get:
+      x-roles: [all]
+      summary: Oturumdaki kullanıcı
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } } }
+
+  /api/v1/flights:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: "F-1: uçuş çizelgesi (keyset sayfalama). Havayolu temsilcisi yalnızca kendi havayolunu görür."
+      parameters:
+        - { $ref: '#/components/parameters/date' }
+        - { $ref: '#/components/parameters/limit' }
+        - { $ref: '#/components/parameters/cursor' }
+        - { name: direction, in: query, schema: { type: string, enum: [ARR, DEP] } }
+        - { name: airline, in: query, schema: { type: string } }
+        - { name: tail, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/FlightPage' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      x-roles: [ops_controller]
+      summary: Uçuş ekle
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/NewFlight' } } } }
+      responses:
+        '201': { description: Oluşturuldu, content: { application/json: { schema: { $ref: '#/components/schemas/Flight' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /api/v1/flights/{id}:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: Uçuş detayı
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Flight' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/v1/schedule/build:
+    post:
+      x-roles: [ops_controller]
+      summary: Turnaround'a bağlanmamış uçuşları uçak bazında eşle
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { date: { type: string, format: date } } } } } }
+      responses: { '200': { description: OK } }
+
+  /api/v1/stands:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: "F-2: stand envanteri ve uyumlu uçak tipleri"
+      parameters: [{ name: type, in: query, description: Yalnızca bu tipe uyumlu standlar, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /api/v1/stands/{id}:
+    patch:
+      x-roles: [ops_controller]
+      summary: Standı pasif/aktif et (denetim kaydına yazılır)
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { active: { type: boolean } } } } } }
+      responses: { '200': { description: OK } }
+  /api/v1/gates:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: Kapılar
+      responses: { '200': { description: OK } }
+  /api/v1/aircraft-types:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: Uçak tipleri (boyut sınıfı, minimum/hedef turnaround)
+      responses: { '200': { description: OK } }
+
+  /api/v1/allocations:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: "F-3: aktif stand/kapı tahsisleri"
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+    post:
+      x-roles: [ops_controller]
+      summary: Elle stand ataması (çakışma → 409, boyut/köprü ihlali → 422)
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { turnaround_id: { type: integer }, stand_id: { type: integer } } } } } }
+      responses:
+        '201': { description: OK }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /api/v1/allocations/run:
+    post:
+      x-roles: [ops_controller]
+      summary: "T-1: günün stand tahsisini çöz; çözülemeyenler nedenleriyle raporlanır"
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { date: { type: string, format: date } } } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunSummary' } } } } }
+  /api/v1/allocations/runs/latest:
+    get:
+      x-roles: [ops_controller, ground_chief, management]
+      summary: Son tahsis çalıştırmasının özeti
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunSummary' } } } } }
+  /api/v1/gantt:
+    get:
+      x-roles: [ops_controller, ground_chief, management, airline_rep]
+      summary: Stand doluluk zaman çizelgesi verisi
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+
+  /api/v1/feed/events:
+    post:
+      x-roles: [ops_controller]
+      summary: "F-5: uçuş bilgi beslemesi (sırasız/tekrarlı olabilir)"
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { events: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/FeedEvent' } } } }
+      responses: { '200': { description: "Her olay için APPLIED | STALE | DUPLICATE | UNKNOWN_FLIGHT" } }
+  /api/v1/replan/pending:
+    get:
+      x-roles: [ops_controller, ground_chief]
+      summary: Besleme saati planla uyuşmayan uçuşlar
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+  /api/v1/replan/preview:
+    post:
+      x-roles: [ops_controller, ground_chief]
+      summary: "T-2: ne olur (what-if) önizlemesi — hiçbir şey yazılmaz"
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/ReplanRequest' } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Plan' } } } } }
+  /api/v1/replan/apply:
+    post:
+      x-roles: [ops_controller]
+      summary: "T-2: planı uygula (SERIALIZABLE, parmak izi kontrollü)"
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/ReplanRequest' } } } }
+      responses:
+        '200': { description: Uygulandı, content: { application/json: { schema: { $ref: '#/components/schemas/Plan' } } } }
+        '409': { description: plan_changed — önizlemeden sonra durum değişti }
+  /api/v1/changes:
+    get:
+      x-roles: [ops_controller, ground_chief, management]
+      summary: Son değişiklik olayları (denetim kaydından)
+      parameters: [{ name: entity, in: query, schema: { type: string } }, { name: before, in: query, schema: { type: integer } }]
+      responses: { '200': { description: OK } }
+
+  /api/v1/crews:
+    get:
+      x-roles: [ops_controller, ground_chief, management]
+      summary: "F-4: ekipler, belgeler, vardiyalar"
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+  /api/v1/crews/{id}/shifts:
+    post:
+      x-roles: [ground_chief]
+      summary: Vardiya ekle (11 saat dinlenme kuralı → 422 rest_rule_violation)
+      parameters: [{ $ref: '#/components/parameters/id' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { start: { type: string, format: date-time }, end: { type: string, format: date-time } } } } } }
+      responses:
+        '201': { description: OK }
+        '422': { $ref: '#/components/responses/Error' }
+  /api/v1/equipment:
+    get:
+      x-roles: [ops_controller, ground_chief, management]
+      summary: Ekipman (yakıt aracı vb.)
+      responses: { '200': { description: OK } }
+  /api/v1/tasks:
+    get:
+      x-roles: [ops_controller, ground_chief, management]
+      summary: Görevler (keyset sayfalama)
+      parameters: [{ $ref: '#/components/parameters/date' }, { $ref: '#/components/parameters/limit' }, { $ref: '#/components/parameters/cursor' }, { name: crew_id, in: query, schema: { type: integer } }]
+      responses: { '200': { description: OK } }
+  /api/v1/tasks/{id}/events:
+    get:
+      x-roles: [ops_controller, ground_chief, management, crew_lead]
+      summary: Görevin olay geçmişi (olay kaynaklı)
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      responses: { '200': { description: OK } }
+  /api/v1/assignments/run:
+    post:
+      x-roles: [ground_chief]
+      summary: "T-3: ekip/ekipman ataması; riskler ve dinlenme ihlalleri raporlanır"
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { date: { type: string, format: date } } } } } }
+      responses: { '200': { description: OK } }
+  /api/v1/risks:
+    get:
+      x-roles: [ops_controller, ground_chief]
+      summary: Turnaround hedefini aşma riski olan uçuşlar (salt okunur hesap)
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+
+  /api/v1/dashboard:
+    get:
+      x-roles: [ops_controller, ground_chief, management]
+      summary: "F-6: canlı operasyon panosu özeti"
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+  /api/v1/stream:
+    get:
+      x-roles: [ops_controller, ground_chief, management, crew_lead]
+      summary: "T-4: SSE olay akışı. EventSource başlık gönderemediği için ?access_token= kabul edilir; Last-Event-ID ile kaçırılanlar tekrar oynatılır."
+      responses: { '200': { description: text/event-stream } }
+  /api/v1/my/tasks:
+    get:
+      x-roles: [crew_lead]
+      summary: Ekip liderinin kendi ekibinin görevleri
+      parameters: [{ $ref: '#/components/parameters/date' }]
+      responses: { '200': { description: OK } }
+  /api/v1/sync/task-events:
+    post:
+      x-roles: [crew_lead, ground_chief]
+      summary: "T-4: çevrimdışı biriken görev olaylarını senkronize et"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                device_id: { type: string }
+                events: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/SyncEvent' } }
+      responses: { '200': { description: "Her olay için APPLIED | MERGED | DUPLICATE | REJECTED ve görevin güncel durumu" } }
+  /api/v1/notices:
+    post:
+      x-roles: [ops_controller, ground_chief]
+      summary: Panoya operasyon duyurusu
+      requestBody: { content: { application/json: { schema: { type: object, properties: { message: { type: string }, level: { type: string, enum: [info, warning, critical] } } } } } }
+      responses: { '202': { description: Yayınlandı } }
+
+  /api/v1/reports/turnaround:
+    get:
+      x-roles: [ops_controller, management]
+      summary: "F-7 / T-5: turnaround süre dağılımı (medyan, P90, hedef ihlal oranı)"
+      parameters:
+        - { name: group_by, in: query, schema: { type: string, enum: [type, airline, stand] } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: object, properties: { rows: { type: array, items: { $ref: '#/components/schemas/ReportRow' } } } } } } } }
+  /api/v1/reports/refresh:
+    post:
+      x-roles: [management]
+      summary: Materialized view'ı eşzamanlı yenile
+      responses: { '200': { description: OK } }
+  /api/v1/reports/data-quality:
+    get:
+      x-roles: [management]
+      summary: Tutarsız zaman damgası sayıları
+      responses: { '200': { description: OK } }
+  /api/v1/audit:
+    get:
+      x-roles: [management]
+      summary: Denetim kaydı (eklemeli-yalnız)
+      parameters: [{ name: entity, in: query, schema: { type: string } }, { name: before, in: query, schema: { type: integer } }]
+      responses: { '200': { description: OK } }
