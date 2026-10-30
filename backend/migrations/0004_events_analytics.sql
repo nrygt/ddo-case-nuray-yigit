@@ -87,7 +87,8 @@ SELECT t.id                       AS turnaround_id,
        a.type_code,
        coalesce(st.code, '-')     AS stand_code,
        at.target_turnaround_min,
-       (extract(epoch FROM s.last_finish - s.first_start) / 60)::numeric(8,2) AS duration_min
+       -- tam sayı saniye: pencere sıralaması numeric'e göre belirgin hızlı (README, soru 3)
+       extract(epoch FROM s.last_finish - s.first_start)::int AS duration_s
   FROM spans s
   JOIN turnarounds t      ON t.id = s.turnaround_id
   JOIN aircraft a         ON a.tail_number = t.tail_number
