@@ -155,7 +155,7 @@ func (s *Store) ListStands(ctx context.Context, typeCode string) ([]Stand, error
 		  LEFT JOIN aircraft_types at ON at.size_class <= s.max_size_class
 		 GROUP BY s.id, g.code
 		HAVING $1 = '' OR $1 = ANY(array_agg(at.code))
-		 ORDER BY s.code`, typeCode)
+		 ORDER BY regexp_replace(s.code, '[0-9]', '', 'g'), nullif(regexp_replace(s.code, '[^0-9]', '', 'g'), '')::int`, typeCode)
 	if err != nil {
 		return nil, err
 	}

@@ -40,6 +40,16 @@ var RequiredCerts = map[TaskType][]string{
 	Cleaning: {},
 }
 
+var typeName = map[TaskType]string{Fuel: "Yakıt", Baggage: "Bagaj", Cleaning: "Temizlik", Bridge: "Köprü"}
+
+var reasonText = map[string]string{
+	"NO_CREW_OF_TYPE":      "bu türde ekip yok",
+	"NO_VALID_CERTIFICATE": "geçerli belgeli ekip yok",
+	"NO_CREW_ON_SHIFT":     "vardiyada ekip yok",
+	"NO_EQUIPMENT":         "ekipman yok",
+	"CAPACITY_EXHAUSTED":   "ekip ya da araç kapasitesi dolu",
+}
+
 // RequiredEquipment görev türüne göre gereken ekipman türü.
 var RequiredEquipment = map[TaskType]string{
 	Fuel: "FUEL_TRUCK",
@@ -237,7 +247,7 @@ func Assign(p Problem) Result {
 		if reason != "" {
 			res.Unassigned = append(res.Unassigned, Unassigned{TaskID: t.ID, Reason: reason})
 			res.Risks = append(res.Risks, Risk{TurnaroundID: t.TurnaroundID, TaskID: t.ID, Level: "CRITICAL",
-				Message: fmt.Sprintf("%s görevi off-block'a kadar yapılamıyor: %s", t.Type, reason)})
+				Message: fmt.Sprintf("%s görevi kalkıştan önce yapılamıyor (%s)", typeName[t.Type], reasonText[reason])})
 			continue
 		}
 		crewSch.add(a.CrewID, a.Start, a.End)
@@ -248,8 +258,8 @@ func Assign(p Problem) Result {
 		res.Assign[t.ID] = a
 		if !t.TargetEnd.IsZero() && a.End.After(t.TargetEnd) {
 			res.Risks = append(res.Risks, Risk{TurnaroundID: t.TurnaroundID, TaskID: t.ID, Level: "WARNING",
-				Message: fmt.Sprintf("%s görevi %d dk gecikmeyle başlıyor, turnaround hedefi %d dk aşılıyor",
-					t.Type, a.DelayMin, int(a.End.Sub(t.TargetEnd).Minutes()))})
+				Message: fmt.Sprintf("%s görevi %d dk gecikmeyle başlıyor, hedef %d dk aşılıyor",
+					typeName[t.Type], a.DelayMin, int(a.End.Sub(t.TargetEnd).Minutes()))})
 		}
 	}
 	return res
