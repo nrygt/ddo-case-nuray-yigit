@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"time"
+	_ "time/tzdata" // distroless imajda zoneinfo yok
 
 	"pistkoordinat/internal/config"
 	"pistkoordinat/internal/db"

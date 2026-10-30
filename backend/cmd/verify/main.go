@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
+	_ "time/tzdata" // distroless imajda zoneinfo yok
 
 	"github.com/jackc/pgx/v5/pgxpool"
 

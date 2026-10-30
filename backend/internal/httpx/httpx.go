@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"pistkoordinat/internal/metrics"
 )
@@ -53,9 +56,15 @@ func JSON(w http.ResponseWriter, status int, v any) {
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	var e *Error
 	if !errors.As(err, &e) {
-		if errors.Is(err, context.DeadlineExceeded) {
+		var connErr *pgconn.ConnectError
+		var netErr *net.OpError
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			e = Errf(http.StatusGatewayTimeout, "timeout", "istek zaman aşımına uğradı")
-		} else {
+		case errors.As(err, &connErr), errors.As(err, &netErr):
+			e = Errf(http.StatusServiceUnavailable, "database_unavailable", "veritabanına şu an ulaşılamıyor, birazdan tekrar deneyin")
+			slog.WarnContext(r.Context(), "veritabanı erişilemez", "path", r.URL.Path)
+		default:
 			slog.ErrorContext(r.Context(), "beklenmeyen hata", "err", err, "path", r.URL.Path)
 			e = Errf(http.StatusInternalServerError, "internal", "beklenmeyen bir hata oluştu")
 		}

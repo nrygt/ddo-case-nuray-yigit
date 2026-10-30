@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	_ "time/tzdata" // distroless imajda zoneinfo yok
 
 	"pistkoordinat/internal/client"
 	"pistkoordinat/internal/domain/feed"

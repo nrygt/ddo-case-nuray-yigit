@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // distroless imajda zoneinfo yok
 
 	"pistkoordinat/internal/api"
 	"pistkoordinat/internal/config"
