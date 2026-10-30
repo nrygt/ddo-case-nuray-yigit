@@ -137,7 +137,9 @@ func LoadCrewProblem(ctx context.Context, q Q, opDate string, reassign bool) (cr
 
 	rows, err = q.Query(ctx, `
 		SELECT k.id, k.turnaround_id, k.task_type, k.planned_start, k.planned_end, t.off_block,
-		       t.on_block + make_interval(mins => at.target_turnaround_min),
+		       -- hedef bitiş: hedef turnaround süresi, ama planlanan yer süresi daha uzunsa
+		       -- kalkıştan 10 dk öncesine kadar bitmesi yeterli (erken hazırlık risk değildir)
+		       greatest(t.on_block + make_interval(mins => at.target_turnaround_min), t.off_block - interval '10 minutes'),
 		       k.status IN ('STARTED','DONE'), coalesce(k.crew_id,0), coalesce(k.equipment_id,0)
 		  FROM tasks k
 		  JOIN turnarounds t ON t.id = k.turnaround_id

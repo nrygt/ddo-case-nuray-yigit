@@ -108,10 +108,10 @@ func NewGauge(r *Registry, name, help string) *Gauge {
 	return g
 }
 
-func (g *Gauge) Add(d int64)    { atomic.AddInt64(&g.v, d) }
-func (g *Gauge) Set(v int64)    { atomic.StoreInt64(&g.v, v) }
-func (g *Gauge) Get() int64     { return atomic.LoadInt64(&g.v) }
-func (g *Gauge) name() string   { return g.n }
+func (g *Gauge) Add(d int64)  { atomic.AddInt64(&g.v, d) }
+func (g *Gauge) Set(v int64)  { atomic.StoreInt64(&g.v, v) }
+func (g *Gauge) Get() int64   { return atomic.LoadInt64(&g.v) }
+func (g *Gauge) name() string { return g.n }
 func (g *Gauge) write(w io.Writer) {
 	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", g.n, g.help, g.n, g.n, g.Get())
 }

@@ -8,7 +8,9 @@ import (
 
 var day = time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 
-func h(hh, mm int) time.Time { return day.Add(time.Duration(hh)*time.Hour + time.Duration(mm)*time.Minute) }
+func h(hh, mm int) time.Time {
+	return day.Add(time.Duration(hh)*time.Hour + time.Duration(mm)*time.Minute)
+}
 
 func fuelCrew(id int, certUntil time.Time) Crew {
 	return Crew{ID: id, Type: Fuel,

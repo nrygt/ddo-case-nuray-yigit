@@ -37,7 +37,7 @@ var DemoUsers = []DemoUser{
 type crewDef struct {
 	name, typ string
 	lead      string
-	shift     string // "early" 05-13, "late" 13-21, "night" 21-05, "badrest"
+	shift     string         // "early" 05-13, "late" 13-21, "night" 21-05, "badrest"
 	certs     map[string]int // belge -> bugünden itibaren geçerlilik günü (negatif: dolmuş)
 }
 
@@ -220,6 +220,14 @@ func load(ctx context.Context, pool *pgxpool.Pool, seedValue int64, day time.Tim
 		return fmt.Errorf("referans veri: %w", err)
 	}
 	if err := LoadDay(ctx, pool, seedValue, day); err != nil {
+		return err
+	}
+	// Raporlar ilk açılışta boş görünmesin diye ~1 yıllık küçük bir geçmiş (20 bin turnaround).
+	// T-5 doğrulaması bunu 5 milyon olaya tamamlar.
+	if _, err := pool.Exec(ctx, `SELECT analytics_generate(240000, $1)`, float64(seedValue%1000)/1000); err != nil {
+		return fmt.Errorf("analitik geçmiş: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `REFRESH MATERIALIZED VIEW mv_turnaround_durations; ANALYZE mv_turnaround_durations`); err != nil {
 		return err
 	}
 	slog.Info("seed yüklendi", "op_date", day.Format("2006-01-02"), "seed", seedValue, "duration_ms", time.Since(start).Milliseconds())
