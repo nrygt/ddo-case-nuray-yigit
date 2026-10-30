@@ -1,0 +1,9 @@
+{
+  "name": "PistKoordinat",
+  "short_name": "Pist",
+  "start_url": "/#/gorevlerim",
+  "display": "standalone",
+  "background_color": "#F4F4F1",
+  "theme_color": "#1D2B36",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
