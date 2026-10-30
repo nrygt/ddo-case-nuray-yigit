@@ -84,7 +84,17 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type ctxKey int
 
-const requestIDKey ctxKey = 1
+const (
+	requestIDKey ctxKey = 1
+	routeKey     ctxKey = 2
+)
+
+// SetRoute router'ın eşleştirdiği deseni loglama/metrik için kaydeder.
+func SetRoute(ctx context.Context, pattern string) {
+	if p, ok := ctx.Value(routeKey).(*string); ok {
+		*p = pattern
+	}
+}
 
 func RequestID(ctx context.Context) string {
 	s, _ := ctx.Value(requestIDKey).(string)
@@ -130,7 +140,8 @@ func Observe(next http.Handler) http.Handler {
 			rid = hex.EncodeToString(b[:])
 		}
 		w.Header().Set("X-Request-ID", rid)
-		ctx := context.WithValue(r.Context(), requestIDKey, rid)
+		route := new(string)
+		ctx := context.WithValue(context.WithValue(r.Context(), requestIDKey, rid), routeKey, route)
 		rec := &statusRecorder{ResponseWriter: w}
 
 		defer func() {
@@ -140,19 +151,18 @@ func Observe(next http.Handler) http.Handler {
 					WriteError(rec, r, errors.New("panic"))
 				}
 			}
-			route := r.Pattern
-			if route == "" {
-				route = "unmatched"
+			if *route == "" {
+				*route = "unmatched"
 			}
 			if rec.status == 0 {
 				rec.status = http.StatusOK
 			}
 			d := time.Since(start)
-			metrics.HTTPRequests.Inc(r.Method, route, strconv.Itoa(rec.status))
-			metrics.HTTPDuration.Observe(d.Seconds(), r.Method, route)
+			metrics.HTTPRequests.Inc(r.Method, *route, strconv.Itoa(rec.status))
+			metrics.HTTPDuration.Observe(d.Seconds(), r.Method, *route)
 			// gövde/başlık loglanmaz: parola ve token sızmasın
 			slog.Info("http",
-				"request_id", rid, "method", r.Method, "route", route,
+				"request_id", rid, "method", r.Method, "route", *route,
 				"status", rec.status, "duration_ms", d.Milliseconds(), "bytes", rec.bytes)
 		}()
 		next.ServeHTTP(rec, r.WithContext(ctx))

@@ -31,7 +31,7 @@ func (r *Registry) register(m writer) {
 	r.metrics = append(r.metrics, m)
 }
 
-func (r *Registry) WriteTo(w io.Writer) {
+func (r *Registry) Write(w io.Writer) {
 	r.mu.Lock()
 	ms := append([]writer(nil), r.metrics...)
 	r.mu.Unlock()
