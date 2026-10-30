@@ -336,7 +336,7 @@ func explain(b *board, stands []Stand, u Turnaround) Unallocated {
 		}
 	}
 	sort.Slice(out.BlockedBy, func(i, j int) bool { return out.BlockedBy[i] < out.BlockedBy[j] })
-	out.Detail = fmt.Sprintf("%d uyumlu standın tamamı %s–%s arasında dolu (15 dk tampon dahil)",
+	out.Detail = fmt.Sprintf("%d uyumlu standın tamamı %s–%s UTC arasında dolu (15 dk tampon dahil)",
 		len(compatible), u.On.UTC().Format("15:04"), u.Off.UTC().Format("15:04"))
 	return out
 }

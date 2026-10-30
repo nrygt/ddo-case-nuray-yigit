@@ -369,7 +369,7 @@ func Templates(on, off time.Time, size byte, needsBridge bool) []TaskSpec {
 	out = append(out,
 		mk(Baggage, 5*time.Minute, dur(25, 40)),
 		mk(Cleaning, 10*time.Minute, dur(20, 35)),
-		mk(Fuel, 15*time.Minute, dur(20, 30)),
+		mk(Fuel, 15*time.Minute, dur(15, 30)),
 	)
 	return out
 }
