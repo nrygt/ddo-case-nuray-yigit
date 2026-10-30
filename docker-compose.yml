@@ -1,0 +1,121 @@
+name: pistkoordinat
+
+x-backend: &backend
+  build: ./backend
+  image: pistkoordinat-backend:local
+  environment: &backend-env
+    DATABASE_URL: postgres://${POSTGRES_USER:-pist}:${POSTGRES_PASSWORD:-pist-demo-parola}@db:5432/${POSTGRES_DB:-pistkoordinat}?sslmode=disable
+    JWT_SECRET: ${JWT_SECRET:?JWT_SECRET .env dosyasında tanımlı olmalı}
+    SEED: ${SEED:-42}
+    SEED_DATE: ${SEED_DATE:-}
+    AIRPORT_TZ: ${AIRPORT_TZ:-Europe/Istanbul}
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+    REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-168h}
+    API_URL: http://api:8080
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pist-demo-parola}
+      POSTGRES_DB: ${POSTGRES_DB:-pistkoordinat}
+    # host'a port açılmıyor; yalnızca compose ağından erişilir
+    command: >
+      postgres -c shared_buffers=256MB -c work_mem=16MB -c maintenance_work_mem=256MB
+               -c max_wal_size=2GB -c checkpoint_timeout=15min
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # migrasyon + seed: bir kez çalışıp çıkar; api bunu bekler
+  migrate:
+    <<: *backend
+    entrypoint: ["/app/migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    entrypoint: ["/app/api"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/app/api", "-healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    stop_grace_period: 25s
+
+  simulator:
+    <<: *backend
+    entrypoint: ["/app/simulator"]
+    environment:
+      <<: *backend-env
+      SIM_INTERVAL: ${SIM_INTERVAL:-3s}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/simulator", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    image: pistkoordinat-web:local
+    environment:
+      API_URL: http://api:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/web", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # make verify
+  verify:
+    <<: *backend
+    profiles: ["verify"]
+    entrypoint: ["/app/verify"]
+    environment:
+      <<: *backend-env
+      VERIFY_EVENTS: ${VERIFY_EVENTS:-5000000}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # make load
+  loadtest:
+    <<: *backend
+    profiles: ["load"]
+    entrypoint: ["/app/loadtest"]
+    command: ["-duration", "60s", "-vus", "50", "-markdown"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
